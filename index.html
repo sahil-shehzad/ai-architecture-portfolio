@@ -53,7 +53,7 @@
     -moz-osx-font-smoothing: grayscale;
     overflow-x: hidden;
     position: relative;
-    cursor: none; /* Custom cursor */
+    /* cursor handled by .custom-cursor class */
   }
 
   /* ---------- Ambient Fluid Background & Noise ---------- */
@@ -94,24 +94,45 @@
   .wrap { max-width: var(--max-w); margin: 0 auto; padding: 0 5%; }
 
   /* ---------- Custom Liquid Cursor ---------- */
+  body.custom-cursor,
+  body.custom-cursor * { cursor: none !important; }
+
   .cursor-dot {
     width: 8px; height: 8px; background: #FFF;
     border-radius: 50%; position: fixed; top: 0; left: 0;
-    transform: translate(-50%, -50%);
+    margin: -4px 0 0 -4px;
+    transform: translate3d(-200px,-200px,0);
     pointer-events: none; z-index: 10000;
     mix-blend-mode: difference;
-    transition: width 0.3s, height 0.3s;
+    opacity: 0;
+    transition: width 0.3s, height 0.3s, opacity 0.3s;
+    will-change: transform;
   }
   .cursor-outline {
     width: 40px; height: 40px;
     border: 1px solid rgba(255,255,255,0.2);
     border-radius: 50%; position: fixed; top: 0; left: 0;
-    transform: translate(-50%, -50%);
+    margin: -20px 0 0 -20px;
+    transform: translate3d(-200px,-200px,0);
     pointer-events: none; z-index: 9999;
-    transition: width 0.3s, height 0.3s, background 0.3s, transform 0.1s ease-out;
+    opacity: 0;
+    transition: width 0.3s, height 0.3s, margin 0.3s, background 0.3s, opacity 0.3s;
     backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    will-change: transform;
   }
-  body:hover .cursor-dot { opacity: 1; }
+
+  body.cursor-ready .cursor-dot,
+  body.cursor-ready .cursor-outline { opacity: 1; }
+
+  /* original hover: outline 60px + rgba(255,255,255,0.1), dot scales to 0.5 */
+  body.cursor-hover .cursor-outline {
+    width: 60px; height: 60px; margin: -30px 0 0 -30px;
+    background: rgba(255,255,255,0.1);
+  }
+  body.cursor-hover .cursor-dot {
+    width: 4px; height: 4px; margin: -2px 0 0 -2px;
+  }
 
   /* ---------- Typography & Utility ---------- */
   h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.04em; }
@@ -808,8 +829,11 @@
   revealElements.forEach(el => revealObserver.observe(el));
 
   // 2. Liquid 3D Magnetic Cards & Spotlight
-  const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-  
+  /* Do NOT try to guess the hardware. Touch-capable laptops still have mice,
+     and media queries disagree across browsers. The custom cursor activates
+     only when a real mouse event arrives, and disables itself on touch. */
+  const isTouchDevice = false;
+
   if (!isTouchDevice) {
     document.querySelectorAll('.study-card').forEach(card => {
       card.addEventListener('mousemove', e => {
@@ -835,45 +859,97 @@
       });
     });
 
-    // 3. Custom Liquid Cursor
+    // 3. Custom Liquid Glass Cursor
     const cursorDot = document.getElementById('cursor-dot');
     const cursorOutline = document.getElementById('cursor-outline');
-    let mouseX = 0, mouseY = 0;
-    let outlineX = 0, outlineY = 0;
 
-    window.addEventListener('mousemove', (e) => {
-      mouseX = e.clientX;
-      mouseY = e.clientY;
-      cursorDot.style.transform = `translate(${mouseX}px, ${mouseY}px) translate(-50%, -50%)`;
-    });
+    if (cursorDot && cursorOutline) {
 
-    // Smooth follow for outline
-    const animateCursor = () => {
-      let distX = mouseX - outlineX;
-      let distY = mouseY - outlineY;
-      outlineX += distX * 0.15;
-      outlineY += distY * 0.15;
-      cursorOutline.style.transform = `translate(${outlineX}px, ${outlineY}px) translate(-50%, -50%)`;
-      requestAnimationFrame(animateCursor);
-    };
-    animateCursor();
+      let mouseX = 0, mouseY = 0;          // live pointer
+      let lensX  = 0, lensY  = 0;          // eased lens position
+      let primed = false;                  // has the pointer been seen yet
+      let rafId  = null;
+      let touchUsed = false;               // true once real touch input occurs
 
-    // Hover interactions for cursor
-    const interactiveTags = document.querySelectorAll('a, .btn-liquid, .capsule');
-    interactiveTags.forEach(el => {
-      el.addEventListener('mouseenter', () => {
-        cursorOutline.style.width = '60px';
-        cursorOutline.style.height = '60px';
-        cursorOutline.style.background = 'rgba(255,255,255,0.1)';
-        cursorDot.style.transform = `translate(${mouseX}px, ${mouseY}px) translate(-50%, -50%) scale(0.5)`;
+      const INTERACTIVE = 'a, button, .btn-liquid, .capsule, .study-card, [data-cursor="hover"]';
+
+      const render = () => {
+        const dx = mouseX - lensX, dy = mouseY - lensY;
+
+        // snap the last sub-pixel so the lens always settles exactly on the
+        // pointer instead of freezing mid-ease when motion stops.
+        if (Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1) {
+          lensX = mouseX; lensY = mouseY;
+        } else {
+          lensX += dx * 0.16;
+          lensY += dy * 0.16;
+        }
+
+        cursorDot.style.transform     = `translate3d(${mouseX}px, ${mouseY}px, 0)`;
+        cursorOutline.style.transform = `translate3d(${lensX}px, ${lensY}px, 0)`;
+
+        // park the loop once converged; any pointer move restarts it
+        if (lensX === mouseX && lensY === mouseY) { rafId = null; return; }
+        rafId = requestAnimationFrame(render);
+      };
+
+      const start = () => { if (rafId === null) rafId = requestAnimationFrame(render); };
+      const stop  = () => { if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; } };
+
+      window.addEventListener('mousemove', (e) => {
+        if (touchUsed) return;             // touch device: stay native
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+
+        // FIX: on the very first move, snap the lens to the pointer instead of
+        // easing in from 0,0 (which is what left it stranded in the corner).
+        if (!primed) {
+          primed = true;
+          // A real mouse is confirmed present: safe to hide the native cursor.
+          document.body.classList.add('custom-cursor');
+          lensX = mouseX; lensY = mouseY;
+          cursorDot.style.transform     = `translate3d(${mouseX}px, ${mouseY}px, 0)`;
+          cursorOutline.style.transform = `translate3d(${lensX}px, ${lensY}px, 0)`;
+          document.body.classList.add('cursor-ready');
+          start();
+        }
+
+        start();   // loop parks itself when settled, so always ensure it runs
+
+        // hover state via delegation, so it also covers elements added later
+        const hit = e.target instanceof Element ? e.target.closest(INTERACTIVE) : null;
+        document.body.classList.toggle('cursor-hover', !!hit);
+      }, { passive: true });
+
+      // hide when the pointer leaves the window, restore cleanly on return
+      document.addEventListener('mouseleave', () => {
+        document.body.classList.remove('cursor-ready', 'cursor-hover');
+        stop();
       });
-      el.addEventListener('mouseleave', () => {
-        cursorOutline.style.width = '40px';
-        cursorOutline.style.height = '40px';
-        cursorOutline.style.background = 'transparent';
-        cursorDot.style.transform = `translate(${mouseX}px, ${mouseY}px) translate(-50%, -50%) scale(1)`;
+      document.addEventListener('mouseenter', (e) => {
+        if (touchUsed) return;
+        mouseX = e.clientX; mouseY = e.clientY;
+        lensX = mouseX; lensY = mouseY;
+        document.body.classList.add('cursor-ready');
+        start();
       });
-    });
+
+      // FIX: rAF is throttled/paused on hidden tabs — resync on return so the
+      // lens never reappears stuck in a corner.
+      // Real touch input: abandon the custom cursor permanently and restore
+      // the native one. Taps emit a synthetic mousemove afterwards, so the
+      // lock must persist rather than fire once.
+      window.addEventListener('touchstart', () => {
+        touchUsed = true;
+        document.body.classList.remove('custom-cursor','cursor-ready','cursor-hover');
+        stop();
+      }, { passive: true });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { stop(); }
+        else if (primed) { lensX = mouseX; lensY = mouseY; start(); }
+      });
+    }
   }
 
   // 4. Shrinking Header on Scroll
